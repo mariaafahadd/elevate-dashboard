@@ -13,11 +13,11 @@ def extract_natwest_pdf(file):
     txns = []
     for page in reader.pages:
         text = page.extract_text()
-        # [cite_start]Regex to capture Date, Description, and Amount from NatWest PDF [cite: 13, 16]
+        # Regex to capture Date, Description, and Amount from NatWest PDF
         matches = re.findall(r'(\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.*?)\s+(-?£[\d,]+\.\d{2})', text)
         for m in matches:
             date_str, desc, amt_str = m
-            # [cite_start]Handle Year Logic: July-Dec is 2022, Jan-June is 2023 [cite: 9]
+            # Handle Year Logic: July-Dec is 2022, Jan-June is 2023
             year = "2023" if any(x in date_str for x in ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]) else "2022"
             txns.append({
                 "Date": pd.to_datetime(f"{date_str} {year}"),
@@ -45,16 +45,21 @@ def process_data(uploaded_files):
     # HMRC & PROPERTY MAPPING LOGIC
     def categorize(row):
         text = (str(row['Counter Party']) + " " + str(row.get('Reference', ''))).upper()
-        # [cite_start]Property Tagging [cite: 1, 13, 16]
+        # Property Tagging
         prop = "18 Honor Street" if "HONOR" in text else "74 Barnby Street" if "BARNBY" in text else "General"
         
-        # [cite_start]HMRC FRS 105 Mapping [cite: 1, 13]
+        # HMRC FRS 105 Mapping
         cat = "Other Operating Charges"
-        if row['Amount'] > 0: cat = "Turnover"
-        elif any(x in text for x in ["SALARY", "NAHEED", "DIRECTOR"]): cat = "Staff Costs"
-        elif any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): cat = "Interest Payable"
-        elif any(x in text for x in ["REPAIRS", "SELCO", "PLASTER"]): cat = "Raw Materials"
-        elif any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 5000: cat = "Fixed Asset"
+        if row['Amount'] > 0: 
+            cat = "Turnover"
+        elif any(x in text for x in ["SALARY", "NAHEED", "DIRECTOR"]): 
+            cat = "Staff Costs"
+        elif any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): 
+            cat = "Interest Payable"
+        elif any(x in text for x in ["REPAIRS", "SELCO", "PLASTER"]): 
+            cat = "Raw Materials"
+        elif any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 5000: 
+            cat = "Fixed Asset"
         
         return pd.Series([prop, cat])
 
@@ -73,12 +78,11 @@ if uploaded_files:
     staff = data[data['HMRC_Cat'] == 'Staff Costs']['Amount'].sum()
     materials = data[data['HMRC_Cat'] == 'Raw Materials']['Amount'].sum()
     interest = data[data['HMRC_Cat'] == 'Interest Payable']['Amount'].sum()
-    other = data[data['HMRC_Cat'] == 'Other Operating Charges']['Amount'].sum()
+    other = data[data['HMRC_Cat'] == 'Other Operating Charges' & (data['Amount'] < 0)]['Amount'].sum()
     fixed_assets = data[data['HMRC_Cat'] == 'Fixed Asset']['Amount'].abs().sum()
 
     # --- HMRC PROFIT & LOSS ---
     st.header("Profit and Loss Account (FRS 105)")
-    
     
     pl_table = pd.DataFrame({
         "HMRC Classification": ["Turnover", "Cost of Raw Materials", "Staff Costs", "Other Operating Charges", "Interest Payable"],
@@ -92,7 +96,6 @@ if uploaded_files:
     # --- BALANCE SHEET ---
     st.header("Balance Sheet")
     
-    
     bs_left, bs_right = st.columns(2)
     with bs_left:
         st.subheader("Assets")
@@ -101,7 +104,7 @@ if uploaded_files:
     with bs_right:
         st.subheader("Capital and Reserves")
         st.write(f"**Retained Earnings:** £{net_profit:,.2f}")
-        [cite_start]st.write(f"**Director Loan Account:** (£12,000.00)") # Based on historical transfers [cite: 13]
+        st.write(f"**Director Loan Account:** (£12,000.00)") 
 
     # --- PROPERTY BREAKDOWN ---
     st.header("Breakdown by Address")
