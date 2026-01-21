@@ -13,11 +13,9 @@ def extract_natwest_pdf(file):
     txns = []
     for page in reader.pages:
         text = page.extract_text()
-        # Regex to capture Date, Description, and Amount from NatWest PDF
         matches = re.findall(r'(\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.*?)\s+(-?£[\d,]+\.\d{2})', text)
         for m in matches:
             date_str, desc, amt_str = m
-            # Handle Year Logic: July-Dec is 2022, Jan-June is 2023
             year = "2023" if any(x in date_str for x in ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]) else "2022"
             txns.append({
                 "Date": pd.to_datetime(f"{date_str} {year}"),
@@ -42,13 +40,10 @@ def process_data(uploaded_files):
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True)
 
-    # HMRC & PROPERTY MAPPING LOGIC
     def categorize(row):
         text = (str(row['Counter Party']) + " " + str(row.get('Reference', ''))).upper()
-        # Property Tagging
         prop = "18 Honor Street" if "HONOR" in text else "74 Barnby Street" if "BARNBY" in text else "General"
         
-        # HMRC FRS 105 Mapping
         cat = "Other Operating Charges"
         if row['Amount'] > 0: 
             cat = "Turnover"
@@ -78,7 +73,10 @@ if uploaded_files:
     staff = data[data['HMRC_Cat'] == 'Staff Costs']['Amount'].sum()
     materials = data[data['HMRC_Cat'] == 'Raw Materials']['Amount'].sum()
     interest = data[data['HMRC_Cat'] == 'Interest Payable']['Amount'].sum()
-    other = data[data['HMRC_Cat'] == 'Other Operating Charges' & (data['Amount'] < 0)]['Amount'].sum()
+    
+    # --- FIXED LINE BELOW ---
+    other = data[(data['HMRC_Cat'] == 'Other Operating Charges') & (data['Amount'] < 0)]['Amount'].sum()
+    
     fixed_assets = data[data['HMRC_Cat'] == 'Fixed Asset']['Amount'].abs().sum()
 
     # --- HMRC PROFIT & LOSS ---
