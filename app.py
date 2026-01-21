@@ -3,25 +3,28 @@ import pandas as pd
 import plotly.express as px
 import re
 import pypdf
+from datetime import datetime
 
-st.set_page_config(page_title="Elevate Living | Multi-Property Dash", layout="wide")
+# --- APP CONFIGURATION ---
+st.set_page_config(page_title="Elevate Living | Statutory Accounts", layout="wide")
 
 # --- DATA EXTRACTION ENGINES ---
 def extract_natwest_pdf(file):
     reader = pypdf.PdfReader(file)
     txns = []
+    # NatWest PDF structure logic [cite: 13, 16]
     for page in reader.pages:
         text = page.extract_text()
         matches = re.findall(r'(\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.*?)\s+(-?£[\d,]+\.\d{2})', text)
         for m in matches:
             date_str, desc, amt_str = m
+            # Handle Year Logic for the 22/23 statements
             year = "2023" if any(x in date_str for x in ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]) else "2022"
             txns.append({
                 "Date": pd.to_datetime(f"{date_str} {year}"),
                 "Counter Party": desc,
-                "Reference": desc, # NatWest often puts details in the description
                 "Amount": float(amt_str.replace('£', '').replace(',', '')),
-                "Source": "NatWest PDF"
+                "Category": "Uncategorized"
             })
     return pd.DataFrame(txns)
 
@@ -37,57 +40,74 @@ def process_data(uploaded_files):
             dfs.append(extract_natwest_pdf(file))
     
     if not dfs: return pd.DataFrame()
-    
     full_df = pd.concat(dfs, ignore_index=True)
-    
-    # PROPERTY TAGGING LOGIC
-    def tag_property(row):
-        text = str(row['Counter Party']) + " " + str(row.get('Reference', '')) + " " + str(row.get('Notes', ''))
-        if 'HONOR' in text.upper(): return '18 Honor Street'
-        if 'BARNBY' in text.upper() or '74 B' in text.upper(): return '74 Barnby Street'
-        return 'General / Unallocated'
-    
-    full_df['Property'] = full_df.apply(tag_property, axis=1)
+
+    # PROPERTY & HMRC CATEGORY MAPPING [cite: 1, 2, 3, 13, 16]
+    def map_accounting(row):
+        text = (str(row['Counter Party']) + " " + str(row.get('Reference', ''))).upper()
+        # Property Tagging
+        prop = "18 Honor Street" if "HONOR" in text else "74 Barnby Street" if "BARNBY" in text else "General"
+        
+        # HMRC Category Mapping
+        cat = "Operating Charge"
+        if any(x in text for x in ["SALARY", "NAHEED"]): cat = "Staff Costs"
+        elif any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): cat = "Interest Payable"
+        elif any(x in text for x in ["REPAIRS", "SELCO", "PLASTER"]): cat = "Raw Materials"
+        elif any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 5000: cat = "Fixed Asset"
+        
+        return pd.Series([prop, cat])
+
+    full_df[['Property', 'HMRC_Cat']] = full_df.apply(map_accounting, axis=1)
     return full_df
 
 # --- APP UI ---
-st.title("🏠 Elevate Living Ltd. Property Portfolio")
-files = st.sidebar.file_uploader("Upload Statements", accept_multiple_files=True)
+st.title("🏠 Elevate Living Ltd. | Statutory Financial Statements")
+files = st.sidebar.file_uploader("Upload CSV/PDF Bank Statements", accept_multiple_files=True)
 
 if files:
     df = process_data(files)
     
-    # Sidebar Filters
-    selected_property = st.sidebar.selectbox("Select Property View", ["All Properties", "18 Honor Street", "74 Barnby Street"])
+    # Financial Calculations
+    turnover = df[df['Amount'] > 0]['Amount'].sum()
+    staff_costs = df[df['HMRC_Cat'] == 'Staff Costs']['Amount'].sum()
+    raw_materials = df[df['HMRC_Cat'] == 'Raw Materials']['Amount'].sum()
+    other_charges = df[df['HMRC_Cat'] == 'Operating Charge' & (df['Amount'] < 0)]['Amount'].sum()
+    interest = df[df['HMRC_Cat'] == 'Interest Payable']['Amount'].sum()
+    fixed_assets = df[df['HMRC_Cat'] == 'Fixed Asset']['Amount'].abs().sum()
+
+    # --- TAB 1: HMRC PROFIT AND LOSS ---
+    st.header("Profit and Loss Account")
+    st.subheader("Period ending 30 June 2023")
     
-    view_df = df if selected_property == "All Properties" else df[df['Property'] == selected_property]
-
-    # ACCOUNTING CALCULATIONS
-    is_asset = view_df['Counter Party'].str.contains('JMW|WTB|SOLICITOR', case=False, na=False)
-    assets_val = view_df[is_asset]['Amount'].abs().sum()
-    p_and_l = view_df[~is_asset]
+    pl_data = {
+        "Description": ["Turnover", "Cost of Raw Materials", "Staff Costs", "Other Operating Charges", "Interest Payable"],
+        "Amount (£)": [turnover, raw_materials, staff_costs, other_charges, interest]
+    }
+    pl_df = pd.DataFrame(pl_data)
+    st.table(pl_df.style.format({"Amount (£)": "£{:,.2f}"}))
     
-    revenue = p_and_l[p_and_l['Amount'] > 0]['Amount'].sum()
-    expenses = p_and_l[p_and_l['Amount'] < 0]['Amount'].sum()
+    net_profit = turnover + raw_materials + staff_costs + other_charges + interest
+    st.metric("Profit / (Loss) before Taxation", f"£{net_profit:,.2f}")
 
-    # DASHBOARD
-    c1, c2, c3 = st.columns(3)
-    c1.metric(f"Revenue ({selected_property})", f"£{revenue:,.2f}")
-    c2.metric("Operating Profit", f"£{revenue + expenses:,.2f}")
-    c3.metric("Asset Investment", f"£{assets_val:,.2f}")
+    # --- TAB 2: MICRO-ENTITY BALANCE SHEET ---
+    st.header("Balance Sheet")
+    
+    
+    bs_col1, bs_col2 = st.columns(2)
+    with bs_col1:
+        st.write("### Assets")
+        st.write(f"**Fixed Assets:** £{fixed_assets:,.2f}")
+        st.write(f"**Current Assets (Bank Balance):** £{df['Amount'].sum():,.2f}")
+    with bs_col2:
+        st.write("### Capital & Reserves")
+        st.write(f"**Called up share capital:** £100.00")
+        st.write(f"**Retained Earnings:** £{net_profit:,.2f}")
 
-    # VISUALS
-    st.subheader("Profit & Loss Analysis")
-    fig = px.bar(p_and_l, x='Date', y='Amount', color='Property', barmode='group')
-    st.plotly_chart(fig, use_container_width=True)
+    # --- TAB 3: PROPERTY PERFORMANCE ---
+    st.header("Performance by Property")
+    prop_perf = df.groupby('Property')['Amount'].sum().reset_index()
+    fig = px.bar(prop_perf, x='Property', y='Amount', color='Property', title="Net Cash Flow by Property")
+    st.plotly_chart(fig)
 
-    tab_pl, tab_bs, tab_tx = st.tabs(["P&L Table", "Balance Sheet", "Transactions"])
-    with tab_pl:
-        st.dataframe(p_and_l.sort_values('Date', ascending=False))
-    with tab_bs:
-        st.write(f"**Property Value (at cost):** £{assets_val:,.2f}")
-        st.write(f"**Retained Earnings:** £{revenue + expenses:,.2f}")
-    with tab_tx:
-        st.write(view_df)
 else:
-    st.info("Upload your statements to see the property breakdown.")
+    st.info("Please upload your statements to generate the statutory accounts.")
