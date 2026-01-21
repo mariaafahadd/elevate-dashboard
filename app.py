@@ -5,31 +5,25 @@ import re
 import pypdf
 from datetime import datetime
 
-# --- ACCOUNTANT'S CONFIGURATION ---
-st.set_page_config(page_title="Elevate Living | UK Accountant Portal", layout="wide")
+# --- APP CONFIGURATION ---
+st.set_page_config(page_title="Elevate Living | Interactive Dashboard", layout="wide")
 
-# --- ACCOUNTING ENGINE: DATA EXTRACTION ---
+# --- ACCOUNTING ENGINES ---
 def extract_natwest_pdf(file):
     reader = pypdf.PdfReader(file)
     text = ""
     for page in reader.pages:
         text += page.extract_text() + "\n"
-    
-    # Extract Statement Period to fix the DateParseError
     year_match = re.search(r'From\s+\d{2}/\d{2}/(\d{4})', text)
     base_year = int(year_match.group(1)) if year_match else 2022
-    
     months_map = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6, 
                   'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12}
-    
     txns = []
     matches = re.findall(r'(\d{1,2})\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(.*?)\s+(-?£[\d,]+\.\d{2})', text)
-    
     for m in matches:
         day, month_str, desc, amt_str = m
         month_num = months_map[month_str]
         year = base_year if month_num >= 7 else base_year + 1
-        
         txns.append({
             "Date": datetime(year, month_num, int(day)),
             "Counter Party": desc.strip(),
@@ -49,95 +43,60 @@ def process_data(uploaded_files):
             dfs.append(tmp)
         elif file.name.endswith('.pdf'):
             dfs.append(extract_natwest_pdf(file))
-    
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True)
 
-    # --- ADVANCED ACCOUNTING CLASSIFICATION ---
-    def categorize_statutory(row):
+    def categorize_logic(row):
         text = (str(row['Counter Party']) + " " + str(row.get('Reference', ''))).upper()
         prop = "18 Honor Street" if "HONOR" in text else "74 Barnby Street" if "BARNBY" in text else "General Portfolio"
-        
-        # 1. Revenue Segmentation
         if row['Amount'] > 0:
-            rtype = "Standard Rent"
-            if "TODD" in text: rtype = "Legal Settlement"
-            if "MUSTAFA" in text: rtype = "Company Let"
-            if "PARVEZ" in text and row['Amount'] > 2000: rtype = "Director Capital Injection"
-            return pd.Series([prop, "Turnover", "Income", rtype])
-        
-        # 2. Capital Assets (Balance Sheet Only)
-        if any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 3000: 
-            return pd.Series([prop, "Fixed Assets: Property Cost", "Capital", "N/A"])
-        
-        # 3. Director Loan Account (Drawings)
-        if any(x in text for x in ["ADNAN", "AIZA"]) and abs(row['Amount']) > 500:
-            return pd.Series([prop, "Director Loan Account (DLA)", "Liability", "N/A"])
-        
-        # 4. HMRC Allowable Expenses (P&L)
-        if any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): return pd.Series([prop, "Loan Interest", "Expense", "N/A"])
-        if any(x in text for x in ["REPAIR", "PLASTER", "KHALID", "HAROUN", "MUHAMMAD", "SELCO"]): return pd.Series([prop, "Repairs & Maintenance", "Expense", "N/A"])
-        if any(x in text for x in ["SALARY", "NAHEED"]): return pd.Series([prop, "Wages & Salaries", "Expense", "N/A"])
-        if any(x in text for x in ["AXA", "INSURANCE"]): return pd.Series([prop, "Insurance", "Expense", "N/A"])
-        
-        return pd.Series([prop, "Other Operating Charges", "Expense", "N/A"])
+            itype = "Standard Rent"
+            if "TODD" in text: itype = "Legal Settlement"
+            if "MUSTAFA" in text: itype = "Company Let"
+            return pd.Series([prop, "Income", "Rental Income", itype])
+        if any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 3000:
+            return pd.Series([prop, "Fixed Asset", "Property Asset", "N/A"])
+        repair_keys = ["REPAIR", "MAINTENANCE", "SELCO", "PLASTER", "KHALID", "HAROUN", "MUHAMMAD"]
+        if any(x in text for x in repair_keys):
+            return pd.Series([prop, "Expense", "Repairs & Maintenance", "N/A"])
+        if any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]):
+            return pd.Series([prop, "Expense", "Mortgage Interest", "N/A"])
+        return pd.Series([prop, "Expense", "Other Operating Costs", "N/A"])
 
-    df[['Property', 'HMRC_Cat', 'Type', 'Income_Type']] = df.apply(categorize_statutory, axis=1)
+    df[['Property', 'Type', 'HMRC_Cat', 'Income_Type']] = df.apply(categorize_logic, axis=1)
     return df
 
 # --- UI INTERFACE ---
-st.title("🏛️ Elevate Living Ltd. | Statutory Financial Controller")
-st.markdown("---")
+st.title("🏠 Elevate Living Ltd. | Clickable Property Intelligence")
+uploaded_files = st.sidebar.file_uploader("Upload Statements", accept_multiple_files=True)
 
-files = st.sidebar.file_uploader("Upload Statements (CSV/PDF)", accept_multiple_files=True)
-
-if files:
-    data = process_data(files)
-    
-    # --- TOP LEVEL PERFORMANCE ---
+if uploaded_files:
+    data = process_data(uploaded_files)
     income_df = data[data['Type'] == "Income"]
-    expense_df = data[data['Type'] == "Expense"]
-    net_profit = income_df['Amount'].sum() + expense_df['Amount'].sum()
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Annual Turnover", f"£{income_df['Amount'].sum():,.2f}")
-    col2.metric("Allowable Expenses", f"£{abs(expense_df['Amount'].sum()):,.2f}")
-    col3.metric("Net Taxable Profit", f"£{net_profit:,.2f}")
-    col4.metric("Capital Portfolio", f"£{data[data['Type'] == 'Capital']['Amount'].abs().sum():,.2f}")
+    # Clickable Navigation Tabs
+    tab1, tab2, tab3 = st.tabs(["📋 P&L Summary", "💰 Income Deep-Dive", "🔨 Repairs Audit"])
 
-    # --- THE INTERACTIVE DASHBOARD ---
-    tabs = st.tabs(["📊 Profit & Loss", "💰 Income Deep-Dive", "🔨 Repairs Audit", "🏛️ Balance Sheet"])
+    with tab1:
+        st.subheader("Profit & Loss Summary")
+        pl_data = data[data['Type'] != "Fixed Asset"].groupby('HMRC_Cat')['Amount'].sum().reset_index()
+        st.table(pl_data.style.format({"Amount": "£{:,.2f}"}))
+        st.plotly_chart(px.bar(pl_data, x='HMRC_Cat', y='Amount', color='HMRC_Cat'))
 
-    with tabs[0]:
-        st.subheader("HMRC Micro-Entity Profit & Loss")
-        
-        pl_table = data[data['Type'].isin(["Income", "Expense"])].groupby('HMRC_Cat')['Amount'].sum().reset_index()
-        st.table(pl_table.style.format({"Amount": "£{:,.2f}"}))
-        st.plotly_chart(px.bar(data[data['Amount'] < 0], x='HMRC_Cat', y='Amount', color='Property', title="Expense Distribution"))
+    with tab2:
+        st.subheader("Income Deep-Dive: Click to Inspect")
+        st.write("Below is a breakdown of every payment received. Click any header to sort.")
+        col_pie, col_table = st.columns([1, 2])
+        with col_pie:
+            st.plotly_chart(px.pie(income_df, values='Amount', names='Income_Type', hole=0.4))
+        with col_table:
+            st.dataframe(income_df[['Date', 'Counter Party', 'Income_Type', 'Amount']].sort_values('Amount', ascending=False), use_container_width=True)
 
-    with tabs[1]:
-        st.subheader("Detailed Income Analysis")
-        col_in1, col_in2 = st.columns([1, 2])
-        with col_in1:
-            st.plotly_chart(px.pie(income_df, values='Amount', names='Income_Type', hole=0.5))
-        with col_in2:
-            st.dataframe(income_df[['Date', 'Counter Party', 'Property', 'Income_Type', 'Amount']].sort_values('Amount', ascending=False))
-
-    with tabs[2]:
-        st.subheader("Property Maintenance Audit")
+    with tab3:
+        st.subheader("Repairs Audit Trail")
         repairs = data[data['HMRC_Cat'] == "Repairs & Maintenance"]
-        st.write("These items are fully deductible for Corporation Tax purposes:")
-        st.dataframe(repairs[['Date', 'Counter Party', 'Property', 'Amount']])
-
-    with tabs[3]:
-        st.subheader("Micro-Entity Balance Sheet (FRS 105)")
-        
-        assets = data[data['Type'] == "Capital"]['Amount'].abs().sum()
-        dla = data[data['HMRC_Cat'] == "Director Loan Account (DLA)"]['Amount'].sum()
-        
-        st.info(f"**Fixed Assets (Land & Buildings):** £{assets:,.2f}")
-        st.warning(f"**Director Loan Account (Net Position):** £{dla:,.2f}")
-        st.success(f"**Net Assets / Shareholders Equity:** £{assets + net_profit + dla:,.2f}")
+        st.write("The following transactions were moved from 'Sundry' to 'Repairs' for tax optimization:")
+        st.dataframe(repairs[['Date', 'Counter Party', 'Amount', 'Property']], use_container_width=True)
 
 else:
-    st.info("Upload your statements to launch the Statutory Financial Dashboard.")
+    st.info("Please upload your CSV or PDF statements to activate the clickable dashboard.")
