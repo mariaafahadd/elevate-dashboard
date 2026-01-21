@@ -5,7 +5,7 @@ import re
 import pypdf
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Elevate Living | HMRC Accounts", layout="wide")
+st.set_page_config(page_title="Elevate Living | Rental Portfolio Dash", layout="wide")
 
 # --- ACCOUNTING ENGINES ---
 def extract_natwest_pdf(file):
@@ -32,7 +32,6 @@ def process_data(uploaded_files):
             tmp = pd.read_csv(file)
             tmp['Date'] = pd.to_datetime(tmp['Date'], dayfirst=True)
             tmp = tmp.rename(columns={'Amount (GBP)': 'Amount', 'Spending Category': 'Category'})
-            tmp['Source'] = "Starling CSV"
             dfs.append(tmp)
         elif file.name.endswith('.pdf'):
             dfs.append(extract_natwest_pdf(file))
@@ -40,74 +39,80 @@ def process_data(uploaded_files):
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True)
 
-    def categorize(row):
+    def categorize_rental(row):
         text = (str(row['Counter Party']) + " " + str(row.get('Reference', ''))).upper()
         prop = "18 Honor Street" if "HONOR" in text else "74 Barnby Street" if "BARNBY" in text else "General"
         
-        cat = "Other Operating Charges"
+        # 1. INCOME
         if row['Amount'] > 0: 
-            cat = "Turnover"
-        elif any(x in text for x in ["SALARY", "NAHEED", "DIRECTOR"]): 
-            cat = "Staff Costs"
-        elif any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): 
-            cat = "Interest Payable"
-        elif any(x in text for x in ["REPAIRS", "SELCO", "PLASTER"]): 
-            cat = "Raw Materials"
-        elif any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 5000: 
-            cat = "Fixed Asset"
+            return pd.Series([prop, "Rental Income", "Income"])
         
-        return pd.Series([prop, cat])
+        # 2. CAPITAL ASSETS (NOT IN P&L)
+        if any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 5000: 
+            return pd.Series([prop, "Property Acquisition/Legal", "Fixed Asset"])
+        
+        # 3. HMRC PROPERTY EXPENSES (P&L)
+        if any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): 
+            return pd.Series([prop, "Loan Interest & Bank Charges", "Expense"])
+        if any(x in text for x in ["REPAIRS", "SELCO", "PLASTER", "KHALID", "HAROUN"]): 
+            return pd.Series([prop, "Property Repairs & Maintenance", "Expense"])
+        if any(x in text for x in ["AXA", "INSURANCE"]): 
+            return pd.Series([prop, "Insurance", "Expense"])
+        if any(x in text for x in ["EE", "UTILITIES", "WATER", "GAS"]): 
+            return pd.Series([prop, "Utilities & Council Tax", "Expense"])
+        if any(x in text for x in ["SALARY", "NAHEED", "DIRECTOR"]): 
+            return pd.Series([prop, "Wages & Staff Costs", "Expense"])
+        if any(x in text for x in ["IONOS", "1 AND 1", "COMPANIES HOUSE", "GPS FINANCIAL", "PROPERTY INFO"]): 
+            return pd.Series([prop, "Professional Fees & Admin", "Expense"])
+        
+        return pd.Series([prop, "Other Allowable Expenses", "Expense"])
 
-    df[['Property', 'HMRC_Cat']] = df.apply(categorize, axis=1)
+    df[['Property', 'Detailed_Cat', 'Accounting_Type']] = df.apply(categorize_rental, axis=1)
     return df
 
 # --- UI INTERFACE ---
-st.title("🏠 Elevate Living Ltd. | Statutory Accounts Portal")
-uploaded_files = st.sidebar.file_uploader("Upload Statements (CSV/PDF)", accept_multiple_files=True)
+st.title("🏠 Elevate Living Ltd. | Rental Business Dashboard")
+uploaded_files = st.sidebar.file_uploader("Upload Starling/NatWest Data", accept_multiple_files=True)
 
 if uploaded_files:
     data = process_data(uploaded_files)
     
-    # Financial Summaries
-    turnover = data[data['HMRC_Cat'] == 'Turnover']['Amount'].sum()
-    staff = data[data['HMRC_Cat'] == 'Staff Costs']['Amount'].sum()
-    materials = data[data['HMRC_Cat'] == 'Raw Materials']['Amount'].sum()
-    interest = data[data['HMRC_Cat'] == 'Interest Payable']['Amount'].sum()
-    
-    # --- FIXED LINE BELOW ---
-    other = data[(data['HMRC_Cat'] == 'Other Operating Charges') & (data['Amount'] < 0)]['Amount'].sum()
-    
-    fixed_assets = data[data['HMRC_Cat'] == 'Fixed Asset']['Amount'].abs().sum()
+    # Financial Calculations
+    income_total = data[data['Accounting_Type'] == "Income"]['Amount'].sum()
+    expense_total = data[data['Accounting_Type'] == "Expense"]['Amount'].sum()
+    net_profit = income_total + expense_total
+    assets_total = data[data['Accounting_Type'] == "Fixed Asset"]['Amount'].abs().sum()
 
-    # --- HMRC PROFIT & LOSS ---
-    st.header("Profit and Loss Account (FRS 105)")
-    
-    pl_table = pd.DataFrame({
-        "HMRC Classification": ["Turnover", "Cost of Raw Materials", "Staff Costs", "Other Operating Charges", "Interest Payable"],
-        "Amount (£)": [turnover, materials, staff, other, interest]
-    })
-    st.table(pl_table.style.format({"Amount (£)": "£{:,.2f}"}))
-    
-    net_profit = turnover + materials + staff + other + interest
-    st.metric("Profit / (Loss) for the Year", f"£{net_profit:,.2f}")
+    # 1. SUMMARY CARDS
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Gross Rent", f"£{income_total:,.2f}")
+    c2.metric("Total Expenses", f"£{abs(expense_total):,.2f}")
+    c3.metric("Net Profit", f"£{net_profit:,.2f}")
+    c4.metric("Property Assets", f"£{assets_total:,.2f}")
 
-    # --- BALANCE SHEET ---
+    # 2. STATUTORY PROFIT & LOSS (Detailed HMRC Categories)
+    st.header("Rental Income Profit & Loss Account")
+    pl_breakdown = data[data['Accounting_Type'] != "Fixed Asset"].groupby('Detailed_Cat')['Amount'].sum().reset_index()
+    pl_breakdown.columns = ['HMRC Category', 'Amount (£)']
+    st.table(pl_breakdown.style.format({"Amount (£)": "£{:,.2f}"}))
+
+    # 3. BALANCE SHEET
     st.header("Balance Sheet")
     
-    bs_left, bs_right = st.columns(2)
-    with bs_left:
-        st.subheader("Assets")
-        st.write(f"**Fixed Assets (Properties):** £{fixed_assets:,.2f}")
-        st.write(f"**Current Assets (Cash):** £{data['Amount'].sum():,.2f}")
-    with bs_right:
-        st.subheader("Capital and Reserves")
+    b_col1, b_col2 = st.columns(2)
+    with b_col1:
+        st.write("### Assets")
+        st.write(f"**Fixed Assets (Land & Buildings):** £{assets_total:,.2f}")
+        st.write(f"**Current Assets (Bank):** £{data['Amount'].sum():,.2f}")
+    with b_col2:
+        st.write("### Equity")
         st.write(f"**Retained Earnings:** £{net_profit:,.2f}")
-        st.write(f"**Director Loan Account:** (£12,000.00)") 
+        st.write(f"**Capital Contributed:** £{assets_total:,.2f}")
 
-    # --- PROPERTY BREAKDOWN ---
-    st.header("Breakdown by Address")
-    prop_fig = px.bar(data[data['Amount'] > 0], x='Property', y='Amount', title="Rental Income by Property")
-    st.plotly_chart(prop_fig)
+    # 4. PROPERTY COMPARISON
+    st.header("Portfolio Breakdown")
+    prop_chart = px.bar(data[data['Accounting_Type'] == "Income"], x='Property', y='Amount', color='Property', title="Income per Property")
+    st.plotly_chart(prop_chart)
 
 else:
-    st.info("Upload your 2021-2023 statements to generate statutory accounts.")
+    st.info("Upload your statements to generate detailed rental accounts.")
