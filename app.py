@@ -5,7 +5,7 @@ import re
 import pypdf
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Elevate Living | Professional Rental Dash", layout="wide")
+st.set_page_config(page_title="Elevate Living | Professional Dash", layout="wide")
 
 # --- ACCOUNTING ENGINES ---
 def extract_natwest_pdf(file):
@@ -47,25 +47,25 @@ def process_data(uploaded_files):
         if row['Amount'] > 0: 
             return pd.Series([prop, "Rental Income", "Income"])
         
-        # 2. CAPITAL ASSETS (The £37k WTB payment and £44k JMW payment)
-        if any(x in text for x in ["JMW", "WTB", "SOLICITOR", "ACQUISITION"]) and abs(row['Amount']) > 3000: 
-            return pd.Series([prop, "Property Acquisition & Legal (Capital)", "Fixed Asset"])
+        # 2. CAPITAL ASSETS (Large Solicitor/Acquisition costs)
+        if any(x in text for x in ["JMW", "WTB", "SOLICITOR"]) and abs(row['Amount']) > 3000: 
+            return pd.Series([prop, "Property Acquisition & Legal", "Fixed Asset"])
         
-        # 3. DETAILED HMRC EXPENSES (P&L)
+        # 3. HMRC REPAIRS (EXPANDED KEYWORDS)
+        # This fixes the "Sundry" issue by catching names and specific trade terms
+        repair_keywords = ["REPAIR", "MAINTENANCE", "SELCO", "PLASTER", "KHALID", "HAROUN", "MUHAMMAD", "PLUMBING", "GAS", "BOILER", "PAINTING", "DECORATING"]
+        if any(x in text for x in repair_keywords): 
+            return pd.Series([prop, "Property Repairs & Maintenance", "Expense"])
+        
+        # 4. OTHER HMRC CATEGORIES
         if any(x in text for x in ["MORTGAGE", "PRECISE", "CHARTER"]): 
-            return pd.Series([prop, "Mortgage Interest & Financing", "Expense"])
-        if any(x in text for x in ["REPAIRS", "SELCO", "PLASTER", "KHALID", "HAROUN", "MUHAMMAD AHMED"]): 
-            return pd.Series([prop, "Maintenance, Repairs & Plastering", "Expense"])
+            return pd.Series([prop, "Loan Interest & Financing", "Expense"])
         if any(x in text for x in ["AXA", "INSURANCE"]): 
             return pd.Series([prop, "Property Insurance", "Expense"])
-        if any(x in text for x in ["EE", "UTILITIES", "WATER", "GAS"]): 
-            return pd.Series([prop, "Utilities (Electric/Gas/Water)", "Expense"])
         if any(x in text for x in ["SALARY", "NAHEED", "DIRECTOR"]): 
             return pd.Series([prop, "Wages & Payroll Staff", "Expense"])
-        if any(x in text for x in ["IONOS", "1 AND 1", "WEB", "COMPANIES HOUSE", "GPS FINANCIAL", "PROPERTY INFO", "DESIGN BY MARIA"]): 
-            return pd.Series([prop, "Admin, Marketing & Professional Fees", "Expense"])
-        if any(x in text for x in ["POST OFFICE", "CHARGES"]):
-            return pd.Series([prop, "Bank & Post Office Charges", "Expense"])
+        if any(x in text for x in ["IONOS", "1 AND 1", "COMPANIES HOUSE", "GPS", "PROPERTY INFO"]): 
+            return pd.Series([prop, "Admin & Professional Fees", "Expense"])
         
         return pd.Series([prop, "Sundry Rental Expenses", "Expense"])
 
@@ -73,8 +73,8 @@ def process_data(uploaded_files):
     return df
 
 # --- UI INTERFACE ---
-st.title("🏠 Elevate Living Ltd. | Property Performance App")
-uploaded_files = st.sidebar.file_uploader("Upload Starling/NatWest Data", accept_multiple_files=True)
+st.title("🏠 Elevate Living Ltd. | Rental Business App")
+uploaded_files = st.sidebar.file_uploader("Upload Statements (CSV/PDF)", accept_multiple_files=True)
 
 if uploaded_files:
     data = process_data(uploaded_files)
@@ -84,31 +84,22 @@ if uploaded_files:
     opex = data[data['Account_Type'] == "Expense"]['Amount'].sum()
     capex = data[data['Account_Type'] == "Fixed Asset"]['Amount'].abs().sum()
 
-    # 1. TOP LEVEL METRICS
+    # Metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Gross Rents", f"£{income:,.2f}")
     c2.metric("Operating Costs", f"£{abs(opex):,.2f}")
     c3.metric("Net Profit", f"£{income + opex:,.2f}")
-    c4.metric("Capital Invested", f"£{capex:,.2f}")
+    c4.metric("Capital Assets", f"£{capex:,.2f}")
 
-    # 2. DETAILED HMRC P&L TABLE
-    st.subheader("Schedule E Property Income Breakdown")
-    
+    # Detailed Table
+    st.subheader("HMRC Property Income Breakdown")
     detailed_pl = data[data['Account_Type'] != "Fixed Asset"].groupby('HMRC_Category')['Amount'].sum().reset_index()
-    detailed_pl.columns = ['HMRC Allowable Category', 'Total Amount (£)']
-    st.table(detailed_pl.sort_values('Total Amount (£)').style.format({"Total Amount (£)": "£{:,.2f}"}))
+    st.table(detailed_pl.style.format({"Amount": "£{:,.2f}"}))
 
-    # 3. BALANCE SHEET
-    st.subheader("Consolidated Balance Sheet")
-    b_col1, b_col2 = st.columns(2)
-    with b_col1:
-        st.info(f"**Fixed Assets (Land/Building Costs):** £{capex:,.2f}")
-    with b_col2:
-        st.success(f"**Current Cash (Net Inflow):** £{data['Amount'].sum():,.2f}")
-
-    # 4. DATA LOGS
-    with st.expander("View All Categorized Transactions"):
-        st.dataframe(data.sort_values('Date', ascending=False))
+    # Property Charts
+    st.subheader("Performance by Address")
+    prop_chart = px.bar(data[data['Account_Type'] == "Income"], x='Property', y='Amount', color='Property')
+    st.plotly_chart(prop_chart, use_container_width=True)
 
 else:
-    st.info("Upload your statements (CSV or PDF) to generate the rental dashboard.")
+    st.info("Upload your bank statements to update the dashboard.")
