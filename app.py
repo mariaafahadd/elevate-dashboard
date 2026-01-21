@@ -2,35 +2,87 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Elevate Living Dashboard", layout="wide")
+# --- APP CONFIGURATION ---
+st.set_page_config(page_title="Elevate Living | Finance App", layout="wide")
 
-st.title("🏠 Elevate Living Ltd. | Financial App")
-st.sidebar.header("Upload New Statements")
-uploaded_file = st.sidebar.file_uploader("Upload Starling or NatWest CSV", type="csv")
+st.title("🏠 Elevate Living Ltd. Dashboard")
+st.markdown("### Rental Property Portfolio: Profit & Loss and Balance Sheet")
 
-# 1. Dashboard Metrics
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Total Portfolio Value", "£81,372", "+£37,184 YoY")
-with col2:
-    st.metric("Annual Rental Income", "£52,809", "210% Growth")
-with col3:
-    st.metric("Operating Margin", "-1.9%", "Warning: High Repairs")
+# --- SIDEBAR: FILE UPLOAD ---
+st.sidebar.header("Data Management")
+uploaded_files = st.sidebar.file_uploader("Upload Starling/NatWest CSVs", accept_multiple_files=True)
 
-# 2. Income vs Expense Chart
-st.subheader("Monthly Performance Trend")
-# Data sourced from processed statements 
-chart_data = pd.DataFrame({
-    'Month': ['Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-    'Income': [1450, 850, 850, 850, 1450, 15880, 1500, 1500, 1500, 1500, 1500, 1500],
-    'Expenses': [982, 1120, 1340, 38184, 1200, 1400, 2100, 3200, 1500, 1200, 1400, 1600]
-})
-fig = px.bar(chart_data, x='Month', y=['Income', 'Expenses'], barmode='group')
-st.plotly_chart(fig, use_container_width=True)
+# --- ACCOUNTING LOGIC FUNCTIONS ---
+def process_data(files):
+    all_data = []
+    for file in files:
+        df = pd.read_csv(file)
+        # Standardizing columns based on Starling/NatWest format
+        if 'Amount (GBP)' in df.columns:
+            df = df.rename(columns={'Amount (GBP)': 'Amount', 'Spending Category': 'Category'})
+        all_data.append(df)
+    
+    if not all_data:
+        return pd.DataFrame()
+        
+    full_df = pd.concat(all_data)
+    full_df['Date'] = pd.to_datetime(full_df['Date'], dayfirst=True)
+    return full_df
 
-# 3. Expense Breakdown
-st.subheader("Where is the money going?")
-# Category analysis based on NatWest and Starling data [cite: 1, 13]
-exp_pie = px.pie(values=[12690, 9216, 11009, 15082], 
-                 names=['Mortgage Interest', 'Repairs/Maintenance', 'Salaries', 'Professional Fees'])
-st.plotly_chart(exp_pie)
+# --- LOAD DATA ---
+df = process_data(uploaded_files)
+
+if not df.empty:
+    # 1. CAPITALIZATION LOGIC
+    # Automatically moving large legal fees to the Balance Sheet
+    solicitor_keywords = ['JMW', 'WTB', 'SOLICITORS']
+    is_solicitor = df['Counter Party'].str.contains('|'.join(solicitor_keywords), case=False, na=False)
+    
+    # Define Assets (Capitalized) vs Operating Expenses
+    assets_df = df[is_solicitor & (df['Amount'].abs() > 5000)]
+    p_and_l_df = df[~(is_solicitor & (df['Amount'].abs() > 5000))]
+
+    # 2. CALCULATE METRICS
+    total_income = p_and_l_df[p_and_l_df['Amount'] > 0]['Amount'].sum()
+    operating_exp = p_and_l_df[p_and_l_df['Amount'] < 0]['Amount'].sum()
+    net_profit = total_income + operating_exp
+    total_assets = assets_df['Amount'].abs().sum()
+
+    # --- DASHBOARD LAYOUT ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Revenue", f"£{total_income:,.2f}")
+    m2.metric("Net Operating Profit", f"£{net_profit:,.2f}")
+    m3.metric("Capitalized Assets", f"£{total_assets:,.2f}")
+
+    # --- TABBED INTERFACE ---
+    tab1, tab2, tab3 = st.tabs(["📊 Profit & Loss", "🏛️ Balance Sheet", "🧾 Transaction Logs"])
+
+    with tab1:
+        st.subheader("Profit & Loss Account")
+        pl_summary = p_and_l_df.groupby('Category')['Amount'].sum().reset_index()
+        
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.table(pl_summary.style.format({'Amount': '£{:.2f}'}))
+        with col_right:
+            fig_pl = px.pie(pl_summary[pl_summary['Amount'] < 0], values='Amount', names='Category', title="Expense Distribution")
+            st.plotly_chart(fig_pl)
+
+    with tab2:
+        st.subheader("Balance Sheet")
+        st.markdown(f"""
+        | Item | Value |
+        | :--- | :--- |
+        | **Fixed Assets (Properties)** | **£{total_assets:,.2f}** |
+        | *Current Cash at Bank* | *£{df['Balance (GBP)'].iloc[-1] if 'Balance (GBP)' in df.columns else 0:,.2f}* |
+        | **Total Assets** | **£{total_assets + (df['Balance (GBP)'].iloc[-1] if 'Balance (GBP)' in df.columns else 0):,.2f}** |
+        | --- | --- |
+        | **Equity (Retained Earnings)** | **£{net_profit:,.2f}** |
+        """)
+
+    with tab3:
+        st.subheader("Full Transaction History")
+        st.dataframe(df.sort_values(by='Date', ascending=False))
+
+else:
+    st.info("Please upload your CSV statements in the sidebar to view the accounts.")
